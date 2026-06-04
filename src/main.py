@@ -7,6 +7,7 @@ from pathlib import Path
 import logging
 from datetime import datetime
 import os
+import threading
 from dotenv import load_dotenv
 
 # Load environment
@@ -43,88 +44,82 @@ config = Config()
 pdf_loader = PDFLoader(config)
 image_extractor = ImageExtractor(config)
 chunker = Chunker(config)
-embedder = Embedder(config)
+# Removed duplicate embedder instantiation (Retriever creates its own self.embedder)
 retriever = Retriever(config)
 llm_generator = LLMGenerator(config)
 
-# Global state
-index = None  # Will be loaded/rebuilt
+
+# AppState to hold the shared index and lock for thread safety
+class AppState:
+    def __init__(self):
+        self.index = None
+        self.lock = threading.RLock()  # Reentrant lock to prevent deadlocks
 
 
-def get_index():
-    global index
-    return index
+app_state = AppState()
 
-
-def set_index(new_index):
-    global index
-    index = new_index
-
-
-# Initialize background watcher
+# Initialize background watcher with AppState dependency injection
 watcher = DocumentWatcher(
     config=config,
     pdf_loader=pdf_loader,
     image_extractor=image_extractor,
     chunker=chunker,
     retriever=retriever,
-    get_index_func=get_index,
-    set_index_func=set_index,
+    state=app_state,
 )
 
 
 def initialize_index():
     """Load existing index or build from PDFs"""
-    global index
+    with app_state.lock:
+        try:
+            logger.info("Initializing RAG index...")
 
-    try:
-        logger.info("Initializing RAG index...")
+            # Check if index can be loaded from Chroma
+            loaded_index = retriever.load_index()
+            if loaded_index:
+                app_state.index = loaded_index
+                logger.info("Successfully loaded existing index from Chroma DB")
+            else:
+                logger.info("Building index from PDFs in incoming folder...")
+                # Load all PDFs from data/incoming (fixed config.data_dir attribute name bug)
+                incoming_dir = config.DATA_DIR / "incoming"
+                pdf_files = list(incoming_dir.glob("*.pdf"))
 
-        # Check if index can be loaded from Chroma
-        loaded_index = retriever.load_index()
-        if loaded_index:
-            index = loaded_index
-            logger.info("Successfully loaded existing index from Chroma DB")
-        else:
-            logger.info("Building index from PDFs in incoming folder...")
-            # Load all PDFs from data/incoming
-            incoming_dir = Path(config.data_dir) / "incoming"
-            pdf_files = list(incoming_dir.glob("*.pdf"))
+                if not pdf_files:
+                    logger.warning("No PDFs found in data/incoming")
+                    app_state.index = None
+                    return
 
-            if not pdf_files:
-                logger.warning("No PDFs found in data/incoming")
-                index = None
-                return
+                documents = []
+                for pdf_file in pdf_files:
+                    logger.info(f"Processing {pdf_file.name}...")
 
-            documents = []
-            for pdf_file in pdf_files:
-                logger.info(f"Processing {pdf_file.name}...")
+                    # Load text
+                    text_docs = pdf_loader.load(str(pdf_file))
+                    documents.extend(text_docs)
 
-                # Load text
-                text_docs = pdf_loader.load(str(pdf_file))
-                documents.extend(text_docs)
+                    # Extract and caption images
+                    if config.USE_IMAGE_CAPTIONS:
+                        image_docs = image_extractor.process_pdf(str(pdf_file))
+                        documents.extend(image_docs)
 
-                # Extract and caption images
-                if config.USE_IMAGE_CAPTIONS:
-                    image_docs = image_extractor.process_pdf(str(pdf_file))
-                    documents.extend(image_docs)
+                if not documents:
+                    logger.warning("No documents loaded from files.")
+                    app_state.index = None
+                    return
 
-            if not documents:
-                logger.warning("No documents loaded from files.")
-                index = None
-                return
+                # Chunk
+                chunks = chunker.chunk_documents(documents)
+                logger.info(f"Created {len(chunks)} chunks")
 
-            # Chunk
-            chunks = chunker.chunk_documents(documents)
-            logger.info(f"Created {len(chunks)} chunks")
+                # Build index
+                app_state.index = retriever.build_index(chunks)
+                logger.info("Index built successfully")
 
-            # Build index
-            index = retriever.build_index(chunks)
-            logger.info("Index built successfully")
-
-    except Exception as e:
-        logger.error(f"Error initializing index: {e}")
-        raise
+        except Exception as e:
+            logger.error(f"Error initializing index: {e}")
+            raise
 
 
 @app.on_event("startup")
@@ -153,7 +148,7 @@ async def health_check():
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
-        "index_loaded": index is not None,
+        "index_loaded": app_state.index is not None,
     }
 
 
@@ -177,22 +172,29 @@ async def query(request: QueryRequest):
     Returns:
         Answer with sources and confidence
     """
-    if not index:
-        raise HTTPException(
-            status_code=503, detail="Index not initialized. Upload PDFs first."
-        )
+    with app_state.lock:
+        current_index = app_state.index
+        if not current_index:
+            raise HTTPException(
+                status_code=503, detail="Index not initialized. Upload PDFs first."
+            )
 
+        try:
+            logger.info(f"Query: {request.question}")
+
+            # Retrieve relevant chunks under the state lock to prevent database concurrency issues
+            retrieved = retriever.retrieve(
+                index=current_index,
+                query=request.question,
+                top_k=config.TOP_K_RETRIEVAL,
+                threshold=config.SIMILARITY_THRESHOLD,
+            )
+        except Exception as e:
+            logger.error(f"Error during retrieval: {e}")
+            raise HTTPException(status_code=500, detail=f"Retrieval error: {str(e)}")
+
+    # LLM Answer Generation runs outside of the AppState lock to allow high concurrency
     try:
-        logger.info(f"Query: {request.question}")
-
-        # Retrieve relevant chunks
-        retrieved = retriever.retrieve(
-            index=index,
-            query=request.question,
-            top_k=config.TOP_K_RETRIEVAL,
-            threshold=config.SIMILARITY_THRESHOLD,
-        )
-
         if not retrieved:
             return QueryResponse(
                 answer="No relevant information found in documents.",
@@ -221,7 +223,7 @@ async def query(request: QueryRequest):
         return QueryResponse(answer=answer, sources=sources, confidence=confidence)
 
     except Exception as e:
-        logger.error(f"Error processing query: {e}")
+        logger.error(f"Error generating answer: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -247,7 +249,7 @@ async def upload_pdf(file: UploadFile = File(...)):
         content = await file.read()
         save_path.write_bytes(content)
 
-        # Process immediately
+        # Process immediately (performed outside the lock as they are index-independent)
         text_docs = pdf_loader.load(str(save_path))
         documents = list(text_docs)
         if config.USE_IMAGE_CAPTIONS:
@@ -256,13 +258,13 @@ async def upload_pdf(file: UploadFile = File(...)):
 
         chunks = chunker.chunk_documents(documents)
 
-        # Add to index
-        global index
-        if index:
-            retriever.add_to_index(index, chunks)
-        else:
-            # Build new index if doesn't exist
-            index = retriever.build_index(chunks)
+        # Add to index thread-safely
+        with app_state.lock:
+            if app_state.index:
+                retriever.add_to_index(app_state.index, chunks)
+            else:
+                # Build new index if doesn't exist
+                app_state.index = retriever.build_index(chunks)
 
         logger.info(f"✅ Added {len(chunks)} chunks from {file.filename}")
 
@@ -286,7 +288,7 @@ async def get_stats():
 
         return {
             "pdfs_in_queue": pdf_count,
-            "index_exists": index is not None,
+            "index_exists": app_state.index is not None,
             "chroma_db_size_mb": sum(
                 f.stat().st_size for f in chroma_path.rglob("*") if f.is_file()
             )
@@ -311,9 +313,9 @@ async def rebuild_index():
     """
     try:
         logger.info("Forcing index rebuild...")
-        global index
-        index = None
-        initialize_index()
+        with app_state.lock:
+            app_state.index = None
+            initialize_index()
         return {"message": "Index rebuilt successfully"}
     except Exception as e:
         logger.error(f"Error rebuilding index: {e}")

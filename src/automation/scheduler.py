@@ -17,16 +17,14 @@ class DocumentWatcher:
         image_extractor,
         chunker,
         retriever,
-        get_index_func,
-        set_index_func,
+        state,
     ):
         self.config = config
         self.pdf_loader = pdf_loader
         self.image_extractor = image_extractor
         self.chunker = chunker
         self.retriever = retriever
-        self.get_index = get_index_func
-        self.set_index = set_index_func
+        self.state = state
 
         self.processed_files = set()
         self._running = False
@@ -113,20 +111,21 @@ class DocumentWatcher:
                 logger.warning("No chunks generated. Skipping indexing.")
                 return
 
-            # Check current global index state and update
-            index = self.get_index()
-            if index:
-                self.retriever.add_to_index(index, chunks)
-                logger.info(
-                    f"Added {len(chunks)} chunks from {pdf_path.name} to existing active index."
-                )
-            else:
-                logger.info(
-                    f"Building initial index with {len(chunks)} chunks from {pdf_path.name}..."
-                )
-                new_index = self.retriever.build_index(chunks)
-                self.set_index(new_index)
-                logger.info("Initial index built successfully in background.")
+            # Check current global index state and update thread-safely
+            with self.state.lock:
+                index = self.state.index
+                if index:
+                    self.retriever.add_to_index(index, chunks)
+                    logger.info(
+                        f"Added {len(chunks)} chunks from {pdf_path.name} to existing active index."
+                    )
+                else:
+                    logger.info(
+                        f"Building initial index with {len(chunks)} chunks from {pdf_path.name}..."
+                    )
+                    new_index = self.retriever.build_index(chunks)
+                    self.state.index = new_index
+                    logger.info("Initial index built successfully in background.")
 
         except Exception as e:
             logger.error(f"Failed to background index {pdf_path.name}: {e}")

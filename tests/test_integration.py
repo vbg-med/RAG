@@ -62,7 +62,7 @@ class TestIntegration(unittest.TestCase):
         # Mock active global index state
         import src.main
 
-        src.main.index = MagicMock()
+        src.main.app_state.index = MagicMock()
 
         # Mock retrieval node returns
         mock_node = MagicMock()
@@ -102,7 +102,7 @@ class TestIntegration(unittest.TestCase):
         # Force null global index
         import src.main
 
-        src.main.index = None
+        src.main.app_state.index = None
 
         response = self.client.post("/query", json={"question": "Where is the index?"})
         self.assertEqual(response.status_code, 503)

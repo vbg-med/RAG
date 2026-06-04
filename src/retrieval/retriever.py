@@ -128,6 +128,12 @@ class Retriever:
                     f"Retrieved node (score={score:.4f}): '{nws.node.text[:60]}...'"
                 )
 
+                # Attach retrieval score to the node object and its metadata
+                nws.node.score = score
+                if nws.node.metadata is None:
+                    nws.node.metadata = {}
+                nws.node.metadata["retrieval_score"] = score
+
                 # Check similarity threshold (we filter if score >= threshold)
                 if score >= threshold:
                     filtered_nodes.append(nws.node)
@@ -137,7 +143,12 @@ class Retriever:
                 logger.info(
                     "No nodes exceeded the threshold. Returning top match as fallback."
                 )
-                filtered_nodes.append(nodes_with_scores[0].node)
+                best_nws = nodes_with_scores[0]
+                best_nws.node.score = best_nws.score if best_nws.score is not None else 1.0
+                if best_nws.node.metadata is None:
+                    best_nws.node.metadata = {}
+                best_nws.node.metadata["retrieval_score"] = best_nws.node.score
+                filtered_nodes.append(best_nws.node)
 
             return filtered_nodes
         except Exception as e:
