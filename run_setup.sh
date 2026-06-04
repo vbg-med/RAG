@@ -34,7 +34,7 @@ LOG_FILE=./logs/pipeline.log
 
 # Ollama
 OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=mistral
+OLLAMA_MODEL=qwen2.5:3b
 OLLAMA_EMBED_MODEL=all-minilm:l6-v2
 
 # LLM settings
@@ -48,6 +48,7 @@ TOP_K_RETRIEVAL=5
 SIMILARITY_THRESHOLD=0.5
 
 # Image processing
+ONLY_TEXT_EMBEDDING=true
 USE_IMAGE_CAPTIONS=true
 IMAGE_MODEL=llava
 EOF
@@ -56,6 +57,6 @@ echo "✅ Setup complete!"
 echo ""
 echo "Next steps:"
 echo "1. Install Ollama: https://ollama.ai"
-echo "2. Pull models: ollama pull mistral && ollama pull nomic-embed-text"
+echo "2. Pull models: ollama pull qwen2.5:3b && ollama pull all-minilm:l6-v2"
 echo "3. Start Ollama: ollama serve"
 echo "4. In another terminal, run: python -m src.main"

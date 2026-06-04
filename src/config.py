@@ -18,7 +18,7 @@ class Config:
 
     # Ollama
     OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-    OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "mistral")
+    OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:3b")
     OLLAMA_EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "all-minilm:l6-v2")
 
     # LLM settings
@@ -31,8 +31,9 @@ class Config:
     TOP_K_RETRIEVAL = int(os.getenv("TOP_K_RETRIEVAL", 5))
     SIMILARITY_THRESHOLD = float(os.getenv("SIMILARITY_THRESHOLD", 0.5))
 
-    # Image processing
-    USE_IMAGE_CAPTIONS = os.getenv("USE_IMAGE_CAPTIONS", "true").lower() == "true"
+    # Image/Media processing
+    ONLY_TEXT_EMBEDDING = os.getenv("ONLY_TEXT_EMBEDDING", "true").lower() == "true"
+    USE_IMAGE_CAPTIONS = os.getenv("USE_IMAGE_CAPTIONS", "true").lower() == "true" and not ONLY_TEXT_EMBEDDING
     IMAGE_MODEL = os.getenv("IMAGE_MODEL", "llava")
 
     # Create directories

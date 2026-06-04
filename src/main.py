@@ -1,7 +1,7 @@
 """FastAPI app with Uvicorn + RAG pipeline"""
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse
 import uvicorn
 from pathlib import Path
 import logging
@@ -157,6 +157,15 @@ async def health_check():
     }
 
 
+@app.get("/", response_class=HTMLResponse)
+async def serve_frontend():
+    """Serve the web interface"""
+    template_path = Path(__file__).parent / "templates" / "index.html"
+    if not template_path.exists():
+        raise HTTPException(status_code=404, detail="Web interface template not found")
+    return HTMLResponse(content=template_path.read_text(encoding="utf-8"))
+
+
 @app.post("/query", response_model=QueryResponse)
 async def query(request: QueryRequest):
     """
@@ -285,6 +294,9 @@ async def get_stats():
             / 1024
             if chroma_path.exists()
             else 0,
+            "llm_model": config.OLLAMA_MODEL,
+            "embed_model": config.OLLAMA_EMBED_MODEL,
+            "only_text_embedding": config.ONLY_TEXT_EMBEDDING,
             "timestamp": datetime.now().isoformat(),
         }
     except Exception as e:
